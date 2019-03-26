@@ -1,0 +1,104 @@
+#!/usr/bin/env python
+
+import numpy
+import geometry_msgs.msg
+import rospy
+from sensor_msgs.msg import JointState
+import tf
+import tf.msg
+from urdf_parser_py.urdf import URDF
+
+"""This function will transform a 4x4 transformation matrix T into a ros message 
+which can be published. In addition to the transform itself, the message
+also specifies who is related by this transform, the parent and the child.
+It is an optional function which you may use as you see fit."""
+def convert_to_message(T, child, parent):
+    t = geometry_msgs.msg.TransformStamped()
+    t.header.frame_id = parent
+    t.header.stamp = rospy.Time.now()
+    t.child_frame_id = child
+    translation = tf.transformations.translation_from_matrix(T)
+    rotation = tf.transformations.quaternion_from_matrix(T)
+    t.transform.translation.x = translation[0]
+    t.transform.translation.y = translation[1]
+    t.transform.translation.z = translation[2]
+    t.transform.rotation.x = rotation[0]
+    t.transform.rotation.y = rotation[1]
+    t.transform.rotation.z = rotation[2]
+    t.transform.rotation.w = rotation[3]        
+    return t
+    
+#Our main class for computing Forward Kinematics
+class ForwardKinematics(object):
+
+    #Initialization
+    def __init__(self):
+        """Announces that it will publish forward kinematics results, in the form of tfMessages.
+        "tf" stands for "transform library", it's ROS's way of communicating around information
+        about where things are in the world"""
+        self.pub_tf = rospy.Publisher("/tf", tf.msg.tfMessage, queue_size=1)
+
+        #Loads the robot model, which contains the robot's kinematics information
+        self.robot = URDF.from_parameter_server()
+
+        #Subscribes to information about what the current joint values are.
+        rospy.Subscriber("joint_states", JointState, self.callback)
+
+
+    """This function is called every time the robot publishes its joint values. You must use
+    the information you get to compute forward kinematics.
+
+    The callback you write should iterate through the entire robot chain, and publish 
+    the transform for each link you find.
+    """
+    def callback(self, joint_values):
+	# YOUR CODE GOES HERE
+	link = self.robot.get_root()
+	links = []
+	joints = []
+	links.append(link)
+	while 1 == 1:
+	    if link not in self.robot.child_map:
+	        break
+	    (joint, next_link) = self.robot.child_map[link][0]
+	    joint_name = self.robot.joint_map[joint]
+	    joints.append(joint_name)
+	    links.append(next_link)
+	    
+	    link = next_link
+	Transforms = self.transform_computation(links, joints, joint_values)
+	self.pub_tf.publish(Transforms)
+
+
+    def transform_computation(self, links, joints, joint_values):
+	print(links)
+	print(joints)
+	print(joint_values)
+	print(joints[0].origin.xyz)	
+	Transforms = []
+	T = tf.transformations.identity_matrix()
+	
+	for i in range(len(joints)):
+	    Ltrans = tf.transformations.translation_matrix(joints[i].origin.xyz)
+	    Lrot = tf.transformations.quaternion_matrix(tf.transformations.quaternion_from_euler(joints[i].origin.rpy[0],joints[i].origin.rpy[1],joints[i].origin.rpy[2]))
+	    L = numpy.dot(Ltrans, Lrot)
+	    T = numpy.dot(T, L)
+	    
+	    if joints[i].type == 'revolute':
+	       ind = joint_values.name.index(joints[i].name)
+	       rad = joint_values.position[ind]
+	       ax = joints[i].axis
+	       rot = tf.transformations.quaternion_matrix(tf.transformations.quaternion_about_axis(rad, ax))
+	    else:
+	       rot = tf.transformations.identity_matrix()
+	    
+	    T = numpy.dot(T,rot)
+	    convert = convert_to_message(T, links[i+1], links[0])
+	    Transforms.append(convert)
+	return Transforms
+       
+if __name__ == '__main__':
+    rospy.init_node('fwk', anonymous=True)
+    fwk = ForwardKinematics()
+    rospy.spin()
+
